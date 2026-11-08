@@ -3,6 +3,15 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import {
+  canChangeTaskStatus,
+  canCommentOnTask,
+  canDeleteComment,
+  canManageProject as canManageProjectFor,
+  canManageTaskAssignment,
+  canUpdateTask,
+  eligibleAssignees,
+} from "../_lib/permissions";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
@@ -135,20 +144,6 @@ function StatusPill({ status }: { status: Task["status"] }) {
 const TASK_STATUSES: Task["status"][] = ["TODO", "IN_PROGRESS", "DONE"];
 const STATUS_LABELS: Record<Task["status"], string> = { TODO: "To Do", IN_PROGRESS: "In Progress", DONE: "Done" };
 
-function canChangeTaskStatus(user: User, project: Project, task: Task) {
-  if (user.role === "VIEWER") return false;
-  const scopedManager = (project.memberships || []).some((member) => member.userId === user.id && member.role === "MANAGER");
-  const managesProject = user.role === "ADMIN" || project.manager.id === user.id ||
-    ((user.role === "PROJECT_MANAGER" || user.role === "TEAM_MEMBER") && scopedManager);
-  return managesProject || (user.role === "TEAM_MEMBER" && (task.assigneeId === user.id || task.assignee?.id === user.id));
-}
-
-function canManageTaskAssignment(user: User, project: Project) {
-  const scopedManager = (project.memberships || []).some((member) => member.userId === user.id && member.role === "MANAGER");
-  return user.role === "ADMIN" || project.manager.id === user.id ||
-    ((user.role === "PROJECT_MANAGER" || user.role === "TEAM_MEMBER") && scopedManager);
-}
-
 function activitySummary(activity: TaskActivity) {
   const details = activity.details?.changes as Record<string, { from?: unknown; to?: unknown }> | undefined;
   if (activity.eventType === "TASK_CREATED") return "created the task";
@@ -220,9 +215,9 @@ function TaskCard({
   const [commenting, setCommenting] = useState(false);
   const [commentText, setCommentText] = useState("");
   const canManage = canManageProject;
-  const canUpdate = canManage || task.assignee?.id === user.id;
-  const canComment = user.role !== "VIEWER";
-  const members = (project.memberships || []).filter((membership) => membership.user.role === "TEAM_MEMBER");
+  const canUpdate = canUpdateTask(user, project, task);
+  const canComment = canCommentOnTask(user, project, task);
+  const members = eligibleAssignees(project);
 
   async function submitComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -251,7 +246,7 @@ function TaskCard({
 
       <div className="comments-block">
         <div className="comments-heading"><span>Comments <b>{task.comments?.length || 0}</b></span>{canComment && <button className="text-button" type="button" onClick={() => setCommenting((value) => !value)}>{commenting ? "Cancel" : "+ Add comment"}</button>}</div>
-        {(task.comments || []).length > 0 ? <div className="comment-list">{task.comments?.map((comment) => <div className="comment-item" key={comment.id}><span className="avatar avatar-tiny">{initials(comment.author.name)}</span><div className="comment-copy"><div><strong>{comment.author.name}</strong><span className="comment-time">Project update</span></div><p>{comment.body}</p></div>{(comment.author.id === user.id || canManage) && <button className="icon-button" type="button" aria-label={`Delete comment by ${comment.author.name}`} title="Delete comment" onClick={() => onDeleteComment(comment)}>×</button>}</div>)}</div> : <p className="no-comments">No comments yet.</p>}
+        {(task.comments || []).length > 0 ? <div className="comment-list">{task.comments?.map((comment) => <div className="comment-item" key={comment.id}><span className="avatar avatar-tiny">{initials(comment.author.name)}</span><div className="comment-copy"><div><strong>{comment.author.name}</strong><span className="comment-time">Project update</span></div><p>{comment.body}</p></div>{canDeleteComment(user, project, task, comment) && <button className="icon-button" type="button" aria-label={`Delete comment by ${comment.author.name}`} title="Delete comment" onClick={() => onDeleteComment(comment)}>×</button>}</div>)}</div> : <p className="no-comments">No comments yet.</p>}
         {commenting && canComment && <form className="comment-form" onSubmit={submitComment}><label className="sr-only" htmlFor={`comment-${task.id}`}>Add a comment</label><input id={`comment-${task.id}`} value={commentText} onChange={(event) => setCommentText(event.target.value)} placeholder="Share an update…" maxLength={2000} required /><button className="button button-primary button-small" disabled={busy}>Post</button></form>}
         {!canComment && <p className="read-only-note">View only</p>}
       </div>
@@ -306,7 +301,7 @@ export default function Home() {
   const statusUpdateInFlight = useRef(false);
 
   const isAdmin = user?.role === "ADMIN";
-  const canManageProject = (project: Project) => isAdmin || project.manager.id === user?.id;
+  const canManageProject = (project: Project) => !!user && canManageProjectFor(user, project);
   const visibleProjects = useMemo(() => projects.filter((project) => {
     const text = `${project.name} ${project.description} ${project.tasks.map((task) => task.title).join(" ")}`.toLowerCase();
     return text.includes(query.toLowerCase());
@@ -610,7 +605,7 @@ export default function Home() {
           return <article className="project-card" key={project.id}><div className={`project-card-accent accent-${index % 4}`} /><div className="project-card-main"><div className="project-card-heading"><div className={`project-avatar project-avatar-large avatar-tone-${index % 4}`}>{initials(project.name)}</div><div className="project-card-title"><div className="project-title-line"><h2><Link href={`/projects/${project.id}`}>{project.name}</Link></h2>{project.archived && <span className="archived-pill">Archived</span>}</div><p>{project.description || "No project description yet."}</p></div><button className="icon-button more-button" aria-label={`Project actions for ${project.name}`} title="Project actions" onClick={(event) => { const menu = event.currentTarget.nextElementSibling as HTMLDetailsElement | null; menu?.toggleAttribute("open"); }}>···</button><details className="project-menu"><summary className="sr-only">Project actions</summary><div><p>Managed by <b>{project.manager.name}</b></p>{canManageProject(project) && <button type="button" onClick={(event) => { const menu = event.currentTarget.closest("details"); if (menu) menu.open = false; const editor = document.getElementById(`edit-${project.id}`) as HTMLDetailsElement | null; if (editor) { editor.open = true; editor.scrollIntoView({ behavior: "smooth", block: "center" }); editor.querySelector<HTMLInputElement>('input[name="name"]')?.focus({ preventScroll: true }); } }}>Edit project</button>}{canManageProject(project) && <button type="button" onClick={() => void mutate(project.archived ? "Project restored." : "Project archived.", () => request(`/api/projects/${project.id}/archive`, "PATCH", { archived: !project.archived }))}>{project.archived ? "Restore project" : "Archive project"}</button>}{isAdmin && <button className="menu-danger" type="button" onClick={() => { if (window.confirm(`Delete “${project.name}” and all its tasks and comments? This cannot be undone.`)) void mutate("Project deleted.", () => request(`/api/projects/${project.id}`, "DELETE")); }}>Delete project</button>}</div></details></div>
             <div className="project-stats"><div><span>Tasks</span><b>{project.tasks.length}</b></div><div><span>Team</span><b>{project.memberships?.length || 0}</b></div><div className="project-progress"><div><span>Progress</span><b>{progress}%</b></div><div className="progress-track"><i style={{ width: `${progress}%` }} /></div></div></div>
             {canManageProject(project) && <details className="disclosure" id={`edit-${project.id}`}><summary>Edit project details</summary><form className="inline-form" onSubmit={(event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const data: Record<string, string> = { name: String(form.get("name")), description: String(form.get("description")) }; if (isAdmin) data.managerId = String(form.get("managerId")); void mutate("Project details saved.", () => request(`/api/projects/${project.id}`, "PATCH", data)); }}><label>Project name<input name="name" defaultValue={project.name} maxLength={100} required /></label><label>Description<input name="description" defaultValue={project.description} maxLength={1000} /></label>{isAdmin && <label>Project Manager<select name="managerId" defaultValue={project.manager.id}>{users.filter((account) => account.active && account.role === "PROJECT_MANAGER").map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>}<button className="button button-secondary button-small" disabled={busy}>Save changes</button></form></details>}
-            {canManageProject(project) && <details className="disclosure"><summary>Add a task</summary><form className="inline-form" onSubmit={(event) => createTask(project, event)}><label>Task name<input name="title" placeholder="Describe the next step" maxLength={200} required /></label><label>Description<input name="description" placeholder="Optional details" maxLength={2000} /></label><label>Assign to<select name="assigneeId" defaultValue=""><option value="">Unassigned</option>{(project.memberships || []).filter((member) => member.user.role === "TEAM_MEMBER").map((member) => <option key={member.userId} value={member.userId}>{member.user.name}</option>)}</select></label><button className="button button-secondary button-small" disabled={busy}>Create task</button></form></details>}
+            {canManageProject(project) && <details className="disclosure"><summary>Add a task</summary><form className="inline-form" onSubmit={(event) => createTask(project, event)}><label>Task name<input name="title" placeholder="Describe the next step" maxLength={200} required /></label><label>Description<input name="description" placeholder="Optional details" maxLength={2000} /></label><label>Assign to<select name="assigneeId" defaultValue=""><option value="">Unassigned</option>{eligibleAssignees(project).map((member) => <option key={member.userId} value={member.userId}>{member.user.name}</option>)}</select></label><button className="button button-secondary button-small" disabled={busy}>Create task</button></form></details>}
             <div className="project-task-preview"><div className="preview-heading"><b>Task list</b><span>{taskMatches.length} {taskMatches.length === 1 ? "task" : "tasks"}</span></div>{taskMatches.slice(0, 3).map((task) => <div className="preview-task" key={task.id}><span className={`task-dot dot-${task.status.toLowerCase()}`} /><span>{task.title}</span><StatusPill status={task.status} /></div>)}{taskMatches.length > 3 && <button className="text-button" onClick={() => router.push("/tasks")}>View all {taskMatches.length} tasks →</button>}{taskMatches.length === 0 && <p className="small-muted">No tasks match this filter.</p>}</div>
             <div className="project-card-footer"><span className="manager-avatar avatar">{initials(project.manager.name)}</span><span>Project Manager <b>{project.manager.name}</b></span><button className="text-button" onClick={() => router.push("/team")}>Manage team →</button></div>
           </div></article>;
@@ -666,7 +661,7 @@ export default function Home() {
             </> : <form className="task-edit-form" onSubmit={(event) => void saveTaskDetails(event)}>
               <label>Title<input value={taskTitleDraft} onChange={(event) => setTaskTitleDraft(event.target.value)} maxLength={200} required /></label>
               <label>Description<textarea value={taskDescriptionDraft} onChange={(event) => setTaskDescriptionDraft(event.target.value)} maxLength={2000} rows={5} /></label>
-              {canManageTaskAssignment(user, taskDetail.project) && <label>Assignee<select value={taskAssigneeDraft} onChange={(event) => setTaskAssigneeDraft(event.target.value)}><option value="">Unassigned</option>{(taskDetail.project.memberships || []).filter((membership) => membership.user.role === "TEAM_MEMBER").map((membership) => <option value={membership.userId} key={membership.userId}>{membership.user.name}</option>)}{taskDetail.task.assignee && !(taskDetail.project.memberships || []).some((membership) => membership.userId === taskDetail.task.assignee?.id) && <option value={taskDetail.task.assignee.id}>{taskDetail.task.assignee.name}</option>}</select></label>}
+              {canManageTaskAssignment(user, taskDetail.project) && <label>Assignee<select value={taskAssigneeDraft} onChange={(event) => setTaskAssigneeDraft(event.target.value)}><option value="">Unassigned</option>{eligibleAssignees(taskDetail.project).map((membership) => <option value={membership.userId} key={membership.userId}>{membership.user.name}</option>)}{taskDetail.task.assignee && !(taskDetail.project.memberships || []).some((membership) => membership.userId === taskDetail.task.assignee?.id) && <option value={taskDetail.task.assignee.id}>{taskDetail.task.assignee.name}</option>}</select></label>}
               <div className="task-edit-actions"><button className="button button-primary button-small" disabled={busy}>{busy ? "Saving…" : "Save changes"}</button><button className="button button-secondary button-small" type="button" disabled={busy} onClick={() => { setEditingTask(false); setTaskTitleDraft(taskDetail.task.title); setTaskDescriptionDraft(taskDetail.task.description); setTaskAssigneeDraft(taskDetail.task.assigneeId || ""); }}>Cancel</button></div>
             </form>}
             {canChangeTaskStatus(user, taskDetail.project, taskDetail.task) && <label className="board-status-control task-detail-status">Update status<select aria-label="Update task status" value={taskDetail.task.status} disabled={busy} onChange={(event) => void changeTaskStatus(taskDetail.project, taskDetail.task, event.target.value as Task["status"])}>{TASK_STATUSES.map((option) => <option value={option} key={option}>{STATUS_LABELS[option]}</option>)}</select></label>}
@@ -675,7 +670,7 @@ export default function Home() {
           <section className="surface-card task-detail-section">
             <div className="card-heading"><div><h2>Comments</h2><p>Discussion on this task</p></div><span className="member-count">{taskDetail.task.comments?.length || 0}</span></div>
             {(taskDetail.task.comments || []).length ? <ol className="task-comments">{[...(taskDetail.task.comments || [])].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)).map((comment) => <li className="task-comment" key={comment.id}><div className="task-comment-heading"><span className="avatar avatar-small">{initials(comment.author.name)}</span><b>{comment.author.name}</b><time dateTime={comment.createdAt}>{formatDateTime(comment.createdAt)}</time></div><p>{comment.body}</p></li>)}</ol> : <p className="task-section-empty">No comments yet.</p>}
-            {canChangeTaskStatus(user, taskDetail.project, taskDetail.task) && <form className="task-comment-form" onSubmit={(event) => void addTaskComment(event)}><label htmlFor="task-comment-input">Add a comment</label><textarea id="task-comment-input" value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} maxLength={2000} rows={3} placeholder="Write a comment…" required /><button className="button button-primary button-small" disabled={busy || !commentDraft.trim()}>{busy ? "Posting…" : "Post comment"}</button></form>}
+            {canCommentOnTask(user, taskDetail.project, taskDetail.task) && <form className="task-comment-form" onSubmit={(event) => void addTaskComment(event)}><label htmlFor="task-comment-input">Add a comment</label><textarea id="task-comment-input" value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} maxLength={2000} rows={3} placeholder="Write a comment…" required /><button className="button button-primary button-small" disabled={busy || !commentDraft.trim()}>{busy ? "Posting…" : "Post comment"}</button></form>}
           </section>
 
           <section className="surface-card task-detail-section task-activity-section">
