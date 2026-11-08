@@ -7,6 +7,10 @@ FlowForge is a collaborative project workspace for planning projects, managing t
 - Node.js 22+ and npm
 - PostgreSQL 14+ running locally, with a `neostats` database
 
+### Install-script policy (npm 12)
+
+`backend/package.json` and `frontend/package.json` pin the reviewed lifecycle scripts in npm 12's `allowScripts` field. The backend approvals are required for Prisma Client/engines and the esbuild binary used by `tsx`. The `sharp` install script is explicitly denied because Sharp uses its prebuilt `@img/*` packages; a global libvips installation can otherwise trigger an unnecessary source build. Approvals are pinned to exact versions, so review and update them when upgrading those packages.
+
 Create the local database as a PostgreSQL administrator (`createdb neostats`, or use pgAdmin). Copy `.env.example` to `backend/.env` and set `DATABASE_URL` to your local account/password. Set a private random `JWT_SECRET`. The default `FRONTEND_ORIGIN` permits the local frontend on ports 3000 and 3001; separate multiple allowed origins with commas. Copy `frontend/.env.example` to `frontend/.env.local`.
 
 ## Install and run
